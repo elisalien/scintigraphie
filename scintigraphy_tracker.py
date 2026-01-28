@@ -84,13 +84,13 @@ class ScintigraphyTracker:
         
         # CRT/Scifi parameters (adjustable)
         self.params = {
-            'heatmap_intensity': 2.5,
-            'trail_decay': 0.95,
-            'particle_emission': 15,  # particles per frame
-            'glow_radius': 15,
+            'heatmap_intensity': 1.2,
+            'trail_decay': 0.92,
+            'particle_emission': 8,  # particles per frame
+            'glow_radius': 9,
             'scanline_intensity': 0.3,
             'chromatic_aberration': 2.0,
-            'phosphor_persistence': 0.8,
+            'phosphor_persistence': 0.6,
             'noise_level': 0.05,
             'gamma': 1.2,
             'contrast': 1.3,
@@ -128,8 +128,8 @@ class ScintigraphyTracker:
                 from PIL import Image
                 import io
 
-                # Encode frame to raw bytes for rembg
-                _, buffer = cv2.imencode('.png', frame)
+                # Encode frame to JPEG (much faster than PNG)
+                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 img_bytes = buffer.tobytes()
 
                 # Remove background (pass bytes, get bytes back)
@@ -271,28 +271,42 @@ class ScintigraphyTracker:
                 self.particles.remove(particle)
     
     def apply_colormap(self, heatmap):
-        """Apply medical/scifi colormap to heatmap"""
+        """Apply medical scintigraphy colormap to heatmap"""
         # Normalize heatmap
         heatmap_norm = np.clip(heatmap / 10.0, 0, 1.0)
-        
-        # Apply gamma correction for more dramatic effect
+
+        # Apply gamma correction
         heatmap_norm = np.power(heatmap_norm, 1.0 / self.params['gamma'])
-        
-        # Custom colormap: Blue (cold) -> Cyan -> Green -> Yellow -> Red (hot)
-        # Similar to medical thermal imaging
+
+        # Medical scintigraphy colormap: Black -> Blue -> Cyan -> Green -> Yellow -> Red -> White
         h, w = heatmap_norm.shape
         colored = np.zeros((h, w, 3), dtype=np.uint8)
-        
-        # Blue channel (high at low values)
-        colored[:, :, 2] = np.clip((1.0 - heatmap_norm * 1.5) * 255, 0, 255).astype(np.uint8)
-        
-        # Green channel (peaks in middle)
-        green_curve = -4 * (heatmap_norm - 0.5) ** 2 + 1
-        colored[:, :, 1] = np.clip(green_curve * 255, 0, 255).astype(np.uint8)
-        
-        # Red channel (high at high values)
-        colored[:, :, 0] = np.clip((heatmap_norm * 1.5) * 255, 0, 255).astype(np.uint8)
-        
+
+        # Piecewise linear colormap matching nuclear medicine imaging
+        t = heatmap_norm
+
+        # Red channel: low until 0.5, then rises to 1.0
+        r = np.where(t < 0.4, 0,
+            np.where(t < 0.75, (t - 0.4) / 0.35,
+            1.0))
+
+        # Green channel: rises from 0.2 to 0.5, then stays high until 0.8
+        g = np.where(t < 0.15, 0,
+            np.where(t < 0.4, (t - 0.15) / 0.25 * 0.8,
+            np.where(t < 0.75, 0.8 + (t - 0.4) * 0.5,
+            1.0 - (t - 0.75) * 0.5)))
+
+        # Blue channel: high at start, fades out in middle, rises again at hot spots
+        b = np.where(t < 0.1, t * 3,
+            np.where(t < 0.4, 0.3 + (t - 0.1) * 2,
+            np.where(t < 0.6, 0.9 - (t - 0.4) * 3,
+            np.where(t < 0.85, 0.3 - (t - 0.6) * 1.2,
+            (t - 0.85) * 5))))
+
+        colored[:, :, 0] = np.clip(r * 255, 0, 255).astype(np.uint8)  # Red (BGR)
+        colored[:, :, 1] = np.clip(g * 255, 0, 255).astype(np.uint8)  # Green
+        colored[:, :, 2] = np.clip(b * 255, 0, 255).astype(np.uint8)  # Blue
+
         return colored
     
     def apply_glow(self, image):
@@ -473,13 +487,13 @@ class ScintigraphyTracker:
                 elif event.key == K_r:
                     # Reset to defaults
                     self.params = {
-                        'heatmap_intensity': 2.5,
-                        'trail_decay': 0.95,
-                        'particle_emission': 15,
-                        'glow_radius': 15,
+                        'heatmap_intensity': 1.2,
+                        'trail_decay': 0.92,
+                        'particle_emission': 8,
+                        'glow_radius': 9,
                         'scanline_intensity': 0.3,
                         'chromatic_aberration': 2.0,
-                        'phosphor_persistence': 0.8,
+                        'phosphor_persistence': 0.6,
                         'noise_level': 0.05,
                         'gamma': 1.2,
                         'contrast': 1.3,
