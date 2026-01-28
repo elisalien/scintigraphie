@@ -51,14 +51,15 @@ class ScintigraphyTracker:
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         
-        # Background removal
+        # Background removal - MOG2 by default (fast), rembg optional (requires CUDA)
         self.bg_session = None
-        self.use_rembg = REMBG_AVAILABLE
-        
-        if self.use_rembg:
+        self.use_rembg = False  # Disabled by default - MOG2 is much faster
+
+        # To enable rembg (slower, requires CUDA), set use_rembg = True above
+        if self.use_rembg and REMBG_AVAILABLE:
             print("🚀 Initializing NVIDIA-accelerated background removal...")
             try:
-                self.bg_session = new_session("u2net")  # Fast model
+                self.bg_session = new_session("u2net")
             except Exception as e:
                 print(f"⚠️  Could not initialize GPU session: {e}")
                 self.use_rembg = False
