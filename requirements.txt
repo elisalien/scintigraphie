@@ -4,18 +4,15 @@
 opencv-python>=4.8.0
 numpy>=1.24.0
 
-# GPU-accelerated background removal (NVIDIA)
-rembg[gpu]>=2.0.50
-onnxruntime-gpu>=1.16.0
+# Body/Pose tracking
+mediapipe>=0.10.0
 
-# Alternative if rembg doesn't work
-# backgroundremover>=0.2.0
+# GPU-accelerated background removal (NVIDIA) - optional
+# rembg[gpu]>=2.0.50
+# onnxruntime-gpu>=1.16.0
 
 # Rendering
 pygame>=2.5.0
 
 # Image processing
 Pillow>=10.0.0
-
-# Optional: For better performance
-# torch>=2.0.0  # If you want PyTorch backend
