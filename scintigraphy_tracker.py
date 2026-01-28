@@ -63,12 +63,12 @@ class ScintigraphyTracker:
                 print(f"⚠️  Could not initialize GPU session: {e}")
                 self.use_rembg = False
         
-        # Fallback: background subtractor
+        # Fallback: background subtractor (always created as fallback)
         if not self.use_rembg:
             print("📊 Using fallback background subtraction (MOG2)")
-            self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
-                history=500, varThreshold=16, detectShadows=False
-            )
+        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
+            history=500, varThreshold=16, detectShadows=False
+        )
         
         # Heatmap accumulation (for temporal trails)
         self.heatmap = np.zeros((height, width), dtype=np.float32)
@@ -125,26 +125,29 @@ class ScintigraphyTracker:
         """Remove background using NVIDIA or fallback method"""
         if self.use_rembg and self.bg_session:
             try:
-                # Convert to PIL format for rembg
-                import io
                 from PIL import Image
-                
-                # Encode frame to bytes
+                import io
+
+                # Encode frame to raw bytes for rembg
                 _, buffer = cv2.imencode('.png', frame)
-                img_bytes = io.BytesIO(buffer.tobytes())
-                
-                # Remove background
-                output = remove(img_bytes, session=self.bg_session)
-                
-                # Convert back to OpenCV
-                output_np = np.array(output)
-                
+                img_bytes = buffer.tobytes()
+
+                # Remove background (pass bytes, get bytes back)
+                output_bytes = remove(img_bytes, session=self.bg_session,
+                                      force_return_bytes=True)
+
+                # Decode output bytes back to image
+                output_img = Image.open(io.BytesIO(output_bytes))
+                output_np = np.array(output_img)
+
                 # Extract alpha channel as mask
-                if output_np.shape[2] == 4:
+                if len(output_np.shape) == 3 and output_np.shape[2] == 4:
                     mask = output_np[:, :, 3]
-                else:
+                elif len(output_np.shape) == 3:
                     mask = cv2.cvtColor(output_np, cv2.COLOR_RGB2GRAY)
-                
+                else:
+                    mask = output_np
+
                 return mask
             except Exception as e:
                 print(f"Background removal error: {e}")
