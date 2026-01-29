@@ -238,7 +238,10 @@ class ScintigraphyTracker:
 
     def _create_scintigraphy_lut(self):
         """Create colormap lookup table"""
-        lut = np.zeros((256, 1, 3), dtype=np.uint8)
+        # Create 3 separate LUTs for B, G, R channels
+        lut_b = np.zeros(256, dtype=np.uint8)
+        lut_g = np.zeros(256, dtype=np.uint8)
+        lut_r = np.zeros(256, dtype=np.uint8)
 
         for i in range(256):
             t = i / 255.0
@@ -258,9 +261,11 @@ class ScintigraphyTracker:
                 tt = (t - 0.8) / 0.2
                 r, g, b = 255, int(255 * (1 - tt * 0.7)), int(tt * 100)
 
-            lut[i, 0] = [b, g, r]
+            lut_b[i] = b
+            lut_g[i] = g
+            lut_r[i] = r
 
-        return lut
+        return (lut_b, lut_g, lut_r)
 
     def _create_static_textures(self):
         """Pre-compute static textures"""
@@ -350,7 +355,12 @@ class ScintigraphyTracker:
 
     def update_trail(self, mask):
         """Update trail buffer"""
-        colored = cv2.LUT(mask, self.colormap_lut)
+        # Apply colormap using separate LUTs for each channel
+        lut_b, lut_g, lut_r = self.colormap_lut
+        b = cv2.LUT(mask, lut_b)
+        g = cv2.LUT(mask, lut_g)
+        r = cv2.LUT(mask, lut_r)
+        colored = cv2.merge([b, g, r])
 
         decay = self.params['trail_decay']
         intensity = self.params['trail_intensity']
