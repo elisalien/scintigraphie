@@ -77,12 +77,14 @@ class ControlWindow:
         self.trackbar_config = {
             'trail_intensity': (0, 100, 85),
             'trail_decay': (0, 100, 92),
-            'particle_emission': (0, 20, 3),
-            'glow_strength': (0, 100, 30),
-            'scanline_intensity': (0, 50, 10),
-            'chromatic_aberration': (0, 10, 2),
-            'brightness': (50, 200, 110),
-            'contrast': (50, 200, 120),
+            'particle_emission': (0, 20, 0),  # Disabled by default
+            'glow_strength': (0, 100, 40),
+            'grain_intensity': (0, 100, 35),  # Film grain effect
+            'depth_intensity': (0, 100, 50),  # Depth map effect
+            'scanline_intensity': (0, 50, 8),
+            'chromatic_aberration': (0, 10, 1),
+            'brightness': (50, 200, 100),
+            'contrast': (50, 200, 115),
             'scanner_speed': (1, 20, 5),
         }
 
@@ -99,6 +101,8 @@ class ControlWindow:
             self.params['trail_decay'] = cv2.getTrackbarPos('trail_decay', self.window_name) / 100.0
             self.params['particle_emission'] = cv2.getTrackbarPos('particle_emission', self.window_name)
             self.params['glow_strength'] = cv2.getTrackbarPos('glow_strength', self.window_name) / 100.0
+            self.params['grain_intensity'] = cv2.getTrackbarPos('grain_intensity', self.window_name) / 100.0
+            self.params['depth_intensity'] = cv2.getTrackbarPos('depth_intensity', self.window_name) / 100.0
             self.params['scanline_intensity'] = cv2.getTrackbarPos('scanline_intensity', self.window_name) / 100.0
             self.params['chromatic_aberration'] = cv2.getTrackbarPos('chromatic_aberration', self.window_name)
             self.params['brightness'] = cv2.getTrackbarPos('brightness', self.window_name) / 100.0
@@ -116,20 +120,20 @@ class ControlWindow:
         info[:] = (30, 30, 30)
 
         cv2.putText(info, "SCINTIGRAPHY CONTROLS", (20, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 200), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 220, 150), 2)  # Cyan
 
-        fps_color = (0, 255, 100) if fps > 30 else (0, 100, 255)
+        fps_color = (255, 200, 100) if fps > 30 else (100, 100, 255)  # Cyan/Red
         cv2.putText(info, f"FPS: {fps:.1f}", (20, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, fps_color, 1)
 
         # Mode display
-        mode_color = (255, 200, 0) if mode == "SCANNER" else (0, 200, 255)
+        mode_color = (255, 255, 200) if mode == "SCANNER" else (255, 180, 100)  # Bright cyan
         cv2.putText(info, f"Mode: {mode}", (200, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, mode_color, 1)
 
         if self.has_skeleton:
             status = "ACTIVE" if skeleton_active else "No body"
-            status_color = (0, 255, 200) if skeleton_active else (100, 100, 100)
+            status_color = (255, 220, 150) if skeleton_active else (100, 100, 100)  # Cyan
             cv2.putText(info, f"Skeleton: {status}", (20, 90),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
 
@@ -200,10 +204,10 @@ class ScintigraphyTracker:
                     min_tracking_confidence=0.5
                 )
                 self.landmark_style = mp_drawing.DrawingSpec(
-                    color=(0, 255, 255), thickness=2, circle_radius=3
+                    color=(255, 255, 200), thickness=2, circle_radius=3  # Bright cyan (BGR)
                 )
                 self.connection_style = mp_drawing.DrawingSpec(
-                    color=(0, 200, 255), thickness=2
+                    color=(255, 200, 100), thickness=2  # Medium cyan-blue (BGR)
                 )
                 self.use_skeleton = True
                 print("✓ Skeleton tracking initialized")
@@ -231,12 +235,14 @@ class ScintigraphyTracker:
         self.params = {
             'trail_intensity': 0.85,
             'trail_decay': 0.92,
-            'particle_emission': 3,
-            'glow_strength': 0.3,
-            'scanline_intensity': 0.1,
-            'chromatic_aberration': 2,
-            'brightness': 1.1,
-            'contrast': 1.2,
+            'particle_emission': 0,  # Disabled by default
+            'glow_strength': 0.4,
+            'grain_intensity': 0.35,  # Film grain
+            'depth_intensity': 0.5,  # Depth map effect
+            'scanline_intensity': 0.08,
+            'chromatic_aberration': 1,
+            'brightness': 1.0,
+            'contrast': 1.15,
             'skeleton_opacity': 0.7,
             'scanner_speed': 5,
         }
@@ -256,7 +262,12 @@ class ScintigraphyTracker:
         self.skeleton_detected = False
 
     def _create_scintigraphy_lut(self):
-        """Create colormap lookup table"""
+        """Create authentic scintigraphy colormap lookup table
+
+        True medical scintigraphy uses a cold palette:
+        Black → Dark Blue → Cyan → White
+        No greens, yellows or warm tones
+        """
         lut_b = np.zeros(256, dtype=np.uint8)
         lut_g = np.zeros(256, dtype=np.uint8)
         lut_r = np.zeros(256, dtype=np.uint8)
@@ -264,24 +275,33 @@ class ScintigraphyTracker:
         for i in range(256):
             t = i / 255.0
 
-            if t < 0.2:
-                r, g, b = 0, 0, int(t * 5 * 180)
-            elif t < 0.4:
-                tt = (t - 0.2) / 0.2
-                r, g, b = 0, int(tt * 200), 180 + int(tt * 75)
-            elif t < 0.6:
-                tt = (t - 0.4) / 0.2
-                r, g, b = 0, 200 + int(tt * 55), int(255 * (1 - tt))
-            elif t < 0.8:
-                tt = (t - 0.6) / 0.2
-                r, g, b = int(tt * 255), 255, 0
+            if t < 0.15:
+                # Black to very dark blue
+                r, g, b = 0, 0, int(t / 0.15 * 40)
+            elif t < 0.35:
+                # Dark blue to medium blue
+                tt = (t - 0.15) / 0.20
+                r, g, b = 0, int(tt * 30), 40 + int(tt * 120)
+            elif t < 0.55:
+                # Medium blue to cyan-blue
+                tt = (t - 0.35) / 0.20
+                r, g, b = 0, 30 + int(tt * 150), 160 + int(tt * 60)
+            elif t < 0.75:
+                # Cyan-blue to bright cyan
+                tt = (t - 0.55) / 0.20
+                r, g, b = int(tt * 80), 180 + int(tt * 55), 220 + int(tt * 35)
+            elif t < 0.90:
+                # Bright cyan to near-white
+                tt = (t - 0.75) / 0.15
+                r, g, b = 80 + int(tt * 140), 235 + int(tt * 20), 255
             else:
-                tt = (t - 0.8) / 0.2
-                r, g, b = 255, int(255 * (1 - tt * 0.7)), int(tt * 100)
+                # Near-white to pure white (hot spots)
+                tt = (t - 0.90) / 0.10
+                r, g, b = 220 + int(tt * 35), 255, 255
 
-            lut_b[i] = b
-            lut_g[i] = g
-            lut_r[i] = r
+            lut_b[i] = min(255, b)
+            lut_g[i] = min(255, g)
+            lut_r[i] = min(255, r)
 
         return (lut_b, lut_g, lut_r)
 
@@ -407,27 +427,28 @@ class ScintigraphyTracker:
         # Create output with scanner effect
         output = self.scanner_buffer.copy()
 
-        # Draw glowing scan line
+        # Draw glowing scan line (cyan color scheme)
         line_y = self.scanner_y
         if line_y < self.height:
-            # Main bright line
-            cv2.line(output, (0, line_y), (self.width, line_y), (0, 255, 200), 2)
+            # Main bright line (bright cyan)
+            cv2.line(output, (0, line_y), (self.width, line_y), (255, 255, 200), 2)
 
             # Glow effect (gradient above the line)
             for i in range(1, 15):
                 alpha = 1.0 - (i / 15.0)
                 y = line_y - i
                 if y >= 0:
-                    intensity = int(200 * alpha)
-                    cv2.line(output, (0, y), (self.width, y), (0, intensity, int(intensity * 0.8)), 1)
+                    brightness = int(200 * alpha)
+                    # Cyan glow (BGR: high blue, medium green, low red)
+                    cv2.line(output, (0, y), (self.width, y), (brightness, int(brightness * 0.8), int(brightness * 0.3)), 1)
 
             # Slight glow below
             for i in range(1, 5):
                 alpha = 1.0 - (i / 5.0)
                 y = line_y + i
                 if y < self.height:
-                    intensity = int(100 * alpha)
-                    cv2.line(output, (0, y), (self.width, y), (0, intensity, int(intensity * 0.6)), 1)
+                    brightness = int(100 * alpha)
+                    cv2.line(output, (0, y), (self.width, y), (brightness, int(brightness * 0.7), int(brightness * 0.2)), 1)
 
         return output
 
@@ -493,22 +514,29 @@ class ScintigraphyTracker:
 
     def apply_effects_fast(self, image):
         """Apply visual effects (optimized)"""
-        # Use uint8 operations where possible
         result = image.copy()
 
-        # Brightness/contrast with LUT (faster)
+        # Brightness/contrast
         brightness = self.params['brightness']
         contrast = self.params['contrast']
-
-        # Simple brightness/contrast
         result = cv2.convertScaleAbs(result, alpha=contrast, beta=(brightness - 1) * 50)
+
+        # Depth map effect - creates pseudo-3D based on intensity
+        depth_intensity = self.params['depth_intensity']
+        if depth_intensity > 0:
+            result = self._apply_depth_effect(result, depth_intensity)
+
+        # Film grain/noise effect
+        grain_intensity = self.params['grain_intensity']
+        if grain_intensity > 0:
+            result = self._apply_grain(result, grain_intensity)
 
         # Vignette (pre-computed)
         result = (result * self.vignette_3ch).astype(np.uint8)
 
         # Scanlines (simple)
         if self.params['scanline_intensity'] > 0:
-            scanline_mult = 1.0 - self.params['scanline_intensity'] * 0.15
+            scanline_mult = 1.0 - self.params['scanline_intensity'] * 0.12
             result[1::2, :] = (result[1::2, :] * scanline_mult).astype(np.uint8)
 
         # Chromatic aberration
@@ -519,24 +547,89 @@ class ScintigraphyTracker:
             b = np.roll(b, -offset, axis=1)
             result = cv2.merge([b, g, r])
 
-        # Glow (small kernel)
+        # Glow (small kernel for radioactive effect)
         if self.params['glow_strength'] > 0:
-            glow = cv2.GaussianBlur(result, (5, 5), 0)
-            result = cv2.addWeighted(result, 1.0, glow, self.params['glow_strength'], 0)
+            glow = cv2.GaussianBlur(result, (7, 7), 0)
+            result = cv2.addWeighted(result, 1.0, glow, self.params['glow_strength'] * 0.6, 0)
 
         return result
 
+    def _apply_grain(self, image, intensity):
+        """Apply film grain/noise effect - authentic medical imaging look"""
+        # Generate noise - mix of fine and coarse grain
+        h, w = image.shape[:2]
+
+        # Fine grain (pixel-level noise)
+        fine_noise = np.random.randint(-30, 30, (h, w), dtype=np.int16)
+
+        # Coarse grain (larger splotches, more like X-ray film)
+        coarse = np.random.randint(-20, 20, (h // 4, w // 4), dtype=np.int16)
+        coarse_noise = cv2.resize(coarse.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR).astype(np.int16)
+
+        # Combine noises
+        combined_noise = (fine_noise * 0.6 + coarse_noise * 0.4).astype(np.int16)
+
+        # Scale by intensity and image brightness (more noise in mid-tones)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+        # Bell curve - more noise in mid-tones, less in pure black/white
+        noise_mask = (4.0 * gray * (1.0 - gray))  # Peaks at 0.5
+
+        # Apply noise
+        result = image.astype(np.int16)
+        for c in range(3):
+            channel_noise = (combined_noise * noise_mask * intensity * 1.5).astype(np.int16)
+            result[:, :, c] = np.clip(result[:, :, c] + channel_noise, 0, 255)
+
+        return result.astype(np.uint8)
+
+    def _apply_depth_effect(self, image, intensity):
+        """Apply pseudo-depth map effect - creates 3D-like depth from intensity"""
+        # Convert to grayscale to get intensity map
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # Create depth-based edge glow (brighter areas appear closer)
+        # Use Sobel for edge detection
+        sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        edges = np.sqrt(sobelx**2 + sobely**2)
+        edges = (edges / edges.max() * 255).astype(np.uint8) if edges.max() > 0 else edges.astype(np.uint8)
+
+        # Create depth highlight (brighter = closer = more glow)
+        depth_highlight = cv2.GaussianBlur(gray, (15, 15), 0)
+
+        # Blend depth into blue channel for "depth fog" effect
+        result = image.copy().astype(np.float32)
+
+        # Add edge glow in cyan
+        edge_glow = edges.astype(np.float32) / 255.0 * intensity * 0.5
+        result[:, :, 0] += edge_glow * 60  # Blue
+        result[:, :, 1] += edge_glow * 80  # Green (cyan tint)
+
+        # Add depth-based intensity boost (brighter areas pop more)
+        depth_boost = (depth_highlight.astype(np.float32) / 255.0) ** 1.5 * intensity * 0.3
+        result[:, :, 0] += depth_boost * 40
+        result[:, :, 1] += depth_boost * 50
+        result[:, :, 2] += depth_boost * 30
+
+        return np.clip(result, 0, 255).astype(np.uint8)
+
     def render_particles_fast(self, surface):
-        """Render particles (optimized)"""
+        """Render particles (optimized) - cyan color scheme"""
         for p in self.particles:
             if 0 <= p.x < self.width and 0 <= p.y < self.height:
                 life = p.life
                 intensity = p.intensity * life
 
-                if life > 0.5:
-                    color = (int(255 * intensity), int(180 * intensity), int(50 * intensity))
+                # Cyan-white color scheme (matches scintigraphy palette)
+                if life > 0.6:
+                    # Bright cyan-white for fresh particles
+                    color = (int(200 * intensity), int(255 * intensity), int(255 * intensity))
+                elif life > 0.3:
+                    # Medium cyan
+                    color = (int(100 * intensity), int(220 * intensity), int(255 * intensity))
                 else:
-                    color = (int(100 * intensity), int(200 * intensity), int(255 * intensity))
+                    # Fading to dark blue
+                    color = (int(50 * intensity), int(150 * intensity), int(200 * intensity))
 
                 size = max(1, int(p.size * life))
                 pygame.draw.circle(surface, color, (int(p.x), int(p.y)), size)
