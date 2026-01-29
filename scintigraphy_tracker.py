@@ -2,7 +2,13 @@
 Scintigraphy-Inspired Blob Tracker with CRT Effects
 Real-time webcam tracking with medical/scifi aesthetic
 + MediaPipe Skeleton Tracking (optional)
++ Scanner Mode (radiographic reveal effect)
++ Video file input support
 + Separate Control Window
+
+Usage:
+  python scintigraphy_tracker.py              # Use webcam
+  python scintigraphy_tracker.py video.mp4    # Use video file
 """
 
 import cv2
@@ -10,8 +16,9 @@ import numpy as np
 from collections import deque
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 import sys
+import os
 
 # Try to import pygame
 try:
@@ -30,7 +37,6 @@ mp_drawing = None
 
 try:
     import mediapipe
-    # Check if it has the solutions attribute (older API)
     if hasattr(mediapipe, 'solutions'):
         mp = mediapipe
         mp_pose = mp.solutions.pose
@@ -65,25 +71,21 @@ class ControlWindow:
         self.window_name = "Scintigraphy Controls"
         self.has_skeleton = has_skeleton
 
-        # Create window
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(self.window_name, 400, 500)
+        cv2.resizeWindow(self.window_name, 400, 550)
 
-        # Create trackbars for each parameter
         self.trackbar_config = {
             'trail_intensity': (0, 100, 85),
             'trail_decay': (0, 100, 92),
-            'particle_emission': (0, 20, 5),
-            'glow_strength': (0, 100, 40),
-            'scanline_intensity': (0, 50, 15),
+            'particle_emission': (0, 20, 3),
+            'glow_strength': (0, 100, 30),
+            'scanline_intensity': (0, 50, 10),
             'chromatic_aberration': (0, 10, 2),
-            'noise_level': (0, 20, 2),
             'brightness': (50, 200, 110),
             'contrast': (50, 200, 120),
-            'vignette_strength': (0, 100, 30),
+            'scanner_speed': (1, 20, 5),
         }
 
-        # Add skeleton opacity only if mediapipe available
         if has_skeleton:
             self.trackbar_config['skeleton_opacity'] = (0, 100, 70)
 
@@ -91,7 +93,7 @@ class ControlWindow:
             cv2.createTrackbar(name, self.window_name, default, max_val, lambda x: None)
 
     def update_params(self):
-        """Read trackbar values and update params dict"""
+        """Read trackbar values"""
         try:
             self.params['trail_intensity'] = cv2.getTrackbarPos('trail_intensity', self.window_name) / 100.0
             self.params['trail_decay'] = cv2.getTrackbarPos('trail_decay', self.window_name) / 100.0
@@ -99,73 +101,90 @@ class ControlWindow:
             self.params['glow_strength'] = cv2.getTrackbarPos('glow_strength', self.window_name) / 100.0
             self.params['scanline_intensity'] = cv2.getTrackbarPos('scanline_intensity', self.window_name) / 100.0
             self.params['chromatic_aberration'] = cv2.getTrackbarPos('chromatic_aberration', self.window_name)
-            self.params['noise_level'] = cv2.getTrackbarPos('noise_level', self.window_name) / 100.0
             self.params['brightness'] = cv2.getTrackbarPos('brightness', self.window_name) / 100.0
             self.params['contrast'] = cv2.getTrackbarPos('contrast', self.window_name) / 100.0
-            self.params['vignette_strength'] = cv2.getTrackbarPos('vignette_strength', self.window_name) / 100.0
+            self.params['scanner_speed'] = cv2.getTrackbarPos('scanner_speed', self.window_name)
 
             if self.has_skeleton:
                 self.params['skeleton_opacity'] = cv2.getTrackbarPos('skeleton_opacity', self.window_name) / 100.0
         except cv2.error:
             pass
 
-    def show(self, fps, skeleton_active=False):
-        """Display control panel with FPS"""
-        info = np.zeros((500, 400, 3), dtype=np.uint8)
+    def show(self, fps, mode, skeleton_active=False):
+        """Display control panel"""
+        info = np.zeros((550, 400, 3), dtype=np.uint8)
         info[:] = (30, 30, 30)
 
-        # Title
         cv2.putText(info, "SCINTIGRAPHY CONTROLS", (20, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 200), 2)
 
-        # FPS
         fps_color = (0, 255, 100) if fps > 30 else (0, 100, 255)
         cv2.putText(info, f"FPS: {fps:.1f}", (20, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, fps_color, 1)
 
-        # Skeleton status
+        # Mode display
+        mode_color = (255, 200, 0) if mode == "SCANNER" else (0, 200, 255)
+        cv2.putText(info, f"Mode: {mode}", (200, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, mode_color, 1)
+
         if self.has_skeleton:
-            status = "ACTIVE" if skeleton_active else "No body detected"
+            status = "ACTIVE" if skeleton_active else "No body"
             status_color = (0, 255, 200) if skeleton_active else (100, 100, 100)
             cv2.putText(info, f"Skeleton: {status}", (20, 90),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
-        else:
-            cv2.putText(info, "Skeleton: DISABLED", (20, 90),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
 
-        # Instructions
-        cv2.putText(info, "Use sliders above to adjust", (20, 450),
+        # Keyboard shortcuts
+        cv2.putText(info, "KEYBOARD SHORTCUTS:", (20, 480),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        cv2.putText(info, "S = Toggle Scanner Mode", (20, 505),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
-        cv2.putText(info, "Press ESC to quit", (20, 475),
+        cv2.putText(info, "ESC = Quit", (20, 525),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
 
         cv2.imshow(self.window_name, info)
 
 
 class ScintigraphyTracker:
-    def __init__(self, width=1280, height=720):
+    def __init__(self, width=1280, height=720, video_source=None):
         self.width = width
         self.height = height
+        self.video_source = video_source
+        self.is_video_file = video_source is not None
 
-        # Check pygame
         if not PYGAME_AVAILABLE:
             raise RuntimeError("pygame is required")
 
-        # Initialize Pygame
         pygame.init()
         self.screen = pygame.display.set_mode((width, height))
         pygame.display.set_caption("Scintigraphy Blob Tracker")
         self.clock = pygame.time.Clock()
 
-        # Webcam
-        print("📹 Opening webcam...")
-        self.cap = cv2.VideoCapture(0)
-        if not self.cap.isOpened():
-            raise RuntimeError("❌ Could not open webcam")
+        # Open video source (webcam or file)
+        if self.is_video_file:
+            if not os.path.exists(video_source):
+                raise RuntimeError(f"❌ Video file not found: {video_source}")
+            print(f"🎬 Opening video file: {video_source}")
+            self.cap = cv2.VideoCapture(video_source)
+        else:
+            print("📹 Opening webcam...")
+            self.cap = cv2.VideoCapture(0)
 
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        print("✓ Webcam opened")
+        if not self.cap.isOpened():
+            raise RuntimeError("❌ Could not open video source")
+
+        # Set resolution for webcam, or get video dimensions
+        if self.is_video_file:
+            self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            self.video_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
+            self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            print(f"✓ Video opened: {self.width}x{self.height} @ {self.video_fps:.1f}fps ({self.total_frames} frames)")
+            # Resize pygame window to match video
+            self.screen = pygame.display.set_mode((self.width, self.height))
+        else:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            print("✓ Webcam opened")
 
         # MediaPipe Pose (optional)
         self.pose = None
@@ -175,7 +194,7 @@ class ScintigraphyTracker:
             try:
                 self.pose = mp_pose.Pose(
                     static_image_mode=False,
-                    model_complexity=0,  # 0=lite (fastest)
+                    model_complexity=0,
                     smooth_landmarks=True,
                     min_detection_confidence=0.5,
                     min_tracking_confidence=0.5
@@ -190,20 +209,19 @@ class ScintigraphyTracker:
                 print("✓ Skeleton tracking initialized")
             except Exception as e:
                 print(f"⚠️  Could not initialize skeleton tracking: {e}")
-                self.use_skeleton = False
 
-        # Background subtractor
         print("📊 Using MOG2 background subtraction")
         self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
             history=500, varThreshold=16, detectShadows=False
         )
 
-        # Trail buffer
+        # Buffers
         self.trail_buffer = np.zeros((height, width, 3), dtype=np.uint8)
+        self.scanner_buffer = np.zeros((height, width, 3), dtype=np.uint8)
 
-        # Particle system
+        # Particles (reduced for performance)
         self.particles: List[Particle] = []
-        self.max_particles = 500
+        self.max_particles = 300
         self.prev_centroid = None
 
         # Colormap LUT
@@ -213,15 +231,14 @@ class ScintigraphyTracker:
         self.params = {
             'trail_intensity': 0.85,
             'trail_decay': 0.92,
-            'particle_emission': 5,
-            'glow_strength': 0.4,
-            'scanline_intensity': 0.15,
+            'particle_emission': 3,
+            'glow_strength': 0.3,
+            'scanline_intensity': 0.1,
             'chromatic_aberration': 2,
-            'noise_level': 0.02,
             'brightness': 1.1,
             'contrast': 1.2,
-            'vignette_strength': 0.3,
             'skeleton_opacity': 0.7,
+            'scanner_speed': 5,
         }
 
         # Control window
@@ -230,15 +247,16 @@ class ScintigraphyTracker:
         # FPS tracking
         self.fps_history = deque(maxlen=30)
 
-        # Static textures
+        # Static textures (optimized)
         self._create_static_textures()
 
-        # Skeleton detection state
+        # Mode and scanner state
+        self.scanner_mode = False
+        self.scanner_y = 0
         self.skeleton_detected = False
 
     def _create_scintigraphy_lut(self):
         """Create colormap lookup table"""
-        # Create 3 separate LUTs for B, G, R channels
         lut_b = np.zeros(256, dtype=np.uint8)
         lut_g = np.zeros(256, dtype=np.uint8)
         lut_r = np.zeros(256, dtype=np.uint8)
@@ -269,13 +287,18 @@ class ScintigraphyTracker:
 
     def _create_static_textures(self):
         """Pre-compute static textures"""
+        # Scanlines (every 2nd line)
         self.scanlines = np.ones((self.height, self.width), dtype=np.float32)
-        self.scanlines[1::2, :] = 0.85
+        self.scanlines[1::2, :] = 0.88
 
+        # Vignette
         cy, cx = self.height // 2, self.width // 2
         y, x = np.ogrid[:self.height, :self.width]
         dist = np.sqrt(((x - cx) / cx) ** 2 + ((y - cy) / cy) ** 2)
-        self.vignette = (1.0 - np.clip(dist * 0.6, 0, 0.6)).astype(np.float32)
+        self.vignette = (1.0 - np.clip(dist * 0.5, 0, 0.4)).astype(np.float32)
+
+        # Pre-compute vignette as uint8 for faster blending
+        self.vignette_3ch = np.dstack([self.vignette] * 3)
 
     def detect_pose(self, frame):
         """Detect pose using MediaPipe"""
@@ -287,8 +310,7 @@ class ScintigraphyTracker:
             results = self.pose.process(rgb_frame)
             self.skeleton_detected = results.pose_landmarks is not None
             return results
-        except Exception as e:
-            print(f"Pose detection error: {e}")
+        except:
             return None
 
     def draw_skeleton(self, image, pose_results):
@@ -298,7 +320,6 @@ class ScintigraphyTracker:
 
         try:
             skeleton_layer = np.zeros_like(image)
-
             mp_drawing.draw_landmarks(
                 skeleton_layer,
                 pose_results.pose_landmarks,
@@ -307,19 +328,18 @@ class ScintigraphyTracker:
                 connection_drawing_spec=self.connection_style
             )
 
-            # Glow effect
-            skeleton_glow = cv2.GaussianBlur(skeleton_layer, (9, 9), 0)
-            skeleton_layer = cv2.addWeighted(skeleton_layer, 1.0, skeleton_glow, 0.5, 0)
+            # Simple glow
+            skeleton_glow = cv2.GaussianBlur(skeleton_layer, (5, 5), 0)
+            skeleton_layer = cv2.addWeighted(skeleton_layer, 1.0, skeleton_glow, 0.4, 0)
 
-            # Blend
             opacity = self.params['skeleton_opacity']
             mask = cv2.cvtColor(skeleton_layer, cv2.COLOR_BGR2GRAY) > 0
             image[mask] = cv2.addWeighted(
                 image, 1 - opacity,
                 skeleton_layer, opacity, 0
             )[mask]
-        except Exception as e:
-            print(f"Skeleton draw error: {e}")
+        except:
+            pass
 
         return image
 
@@ -355,7 +375,6 @@ class ScintigraphyTracker:
 
     def update_trail(self, mask):
         """Update trail buffer"""
-        # Apply colormap using separate LUTs for each channel
         lut_b, lut_g, lut_r = self.colormap_lut
         b = cv2.LUT(mask, lut_b)
         g = cv2.LUT(mask, lut_g)
@@ -371,10 +390,49 @@ class ScintigraphyTracker:
             0
         )
 
-        return self.trail_buffer.copy()
+        return self.trail_buffer
+
+    def apply_scanner_effect(self, image):
+        """Apply scanner/radiograph progressive reveal effect"""
+        speed = max(1, self.params['scanner_speed'])
+        self.scanner_y += speed
+
+        if self.scanner_y >= self.height:
+            self.scanner_y = 0
+            self.scanner_buffer = np.zeros_like(self.scanner_buffer)
+
+        # Copy revealed area to scanner buffer
+        self.scanner_buffer[:self.scanner_y, :] = image[:self.scanner_y, :]
+
+        # Create output with scanner effect
+        output = self.scanner_buffer.copy()
+
+        # Draw glowing scan line
+        line_y = self.scanner_y
+        if line_y < self.height:
+            # Main bright line
+            cv2.line(output, (0, line_y), (self.width, line_y), (0, 255, 200), 2)
+
+            # Glow effect (gradient above the line)
+            for i in range(1, 15):
+                alpha = 1.0 - (i / 15.0)
+                y = line_y - i
+                if y >= 0:
+                    intensity = int(200 * alpha)
+                    cv2.line(output, (0, y), (self.width, y), (0, intensity, int(intensity * 0.8)), 1)
+
+            # Slight glow below
+            for i in range(1, 5):
+                alpha = 1.0 - (i / 5.0)
+                y = line_y + i
+                if y < self.height:
+                    intensity = int(100 * alpha)
+                    cv2.line(output, (0, y), (self.width, y), (0, intensity, int(intensity * 0.6)), 1)
+
+        return output
 
     def emit_particles(self, contour, centroid):
-        """Emit particles"""
+        """Emit particles (optimized)"""
         if contour is None or centroid is None:
             return
 
@@ -408,9 +466,8 @@ class ScintigraphyTracker:
                 vy=dy * np.random.uniform(1, 2) + velocity[1] * 0.2,
                 life=1.0,
                 intensity=np.random.uniform(0.6, 1.0),
-                size=np.random.uniform(2, 4)
+                size=np.random.uniform(2, 3)
             )
-
             self.particles.append(particle)
 
         if len(self.particles) > self.max_particles:
@@ -420,41 +477,41 @@ class ScintigraphyTracker:
 
     def update_particles(self, dt):
         """Update particles"""
-        alive_particles = []
+        alive = []
+        for p in self.particles:
+            p.x += p.vx * dt * 60
+            p.y += p.vy * dt * 60
+            p.vx *= 0.95
+            p.vy *= 0.95
+            p.vy += 0.02
+            p.life -= dt * 2.5
 
-        for particle in self.particles:
-            particle.x += particle.vx * dt * 60
-            particle.y += particle.vy * dt * 60
-            particle.vx *= 0.96
-            particle.vy *= 0.96
-            particle.vy += 0.03
-            particle.life -= dt * 2.0
+            if p.life > 0:
+                alive.append(p)
 
-            if particle.life > 0:
-                alive_particles.append(particle)
-
-        self.particles = alive_particles
+        self.particles = alive
 
     def apply_effects_fast(self, image):
-        """Apply visual effects"""
-        result = image.astype(np.float32)
+        """Apply visual effects (optimized)"""
+        # Use uint8 operations where possible
+        result = image.copy()
 
-        result = result * self.params['contrast'] * self.params['brightness']
+        # Brightness/contrast with LUT (faster)
+        brightness = self.params['brightness']
+        contrast = self.params['contrast']
 
-        vignette_strength = self.params['vignette_strength']
-        vignette_factor = 1.0 - vignette_strength * (1.0 - self.vignette[:, :, np.newaxis])
-        result = result * vignette_factor
+        # Simple brightness/contrast
+        result = cv2.convertScaleAbs(result, alpha=contrast, beta=(brightness - 1) * 50)
 
-        scanline_factor = 1.0 - self.params['scanline_intensity'] * (1.0 - self.scanlines[:, :, np.newaxis])
-        result = result * scanline_factor
+        # Vignette (pre-computed)
+        result = (result * self.vignette_3ch).astype(np.uint8)
 
-        if self.params['noise_level'] > 0:
-            noise = np.random.randint(-10, 10, (self.height, self.width, 1), dtype=np.int16)
-            noise = noise * self.params['noise_level']
-            result = result + noise
+        # Scanlines (simple)
+        if self.params['scanline_intensity'] > 0:
+            scanline_mult = 1.0 - self.params['scanline_intensity'] * 0.15
+            result[1::2, :] = (result[1::2, :] * scanline_mult).astype(np.uint8)
 
-        result = np.clip(result, 0, 255).astype(np.uint8)
-
+        # Chromatic aberration
         offset = int(self.params['chromatic_aberration'])
         if offset > 0:
             b, g, r = cv2.split(result)
@@ -462,40 +519,27 @@ class ScintigraphyTracker:
             b = np.roll(b, -offset, axis=1)
             result = cv2.merge([b, g, r])
 
+        # Glow (small kernel)
         if self.params['glow_strength'] > 0:
-            glow = cv2.GaussianBlur(result, (7, 7), 0)
+            glow = cv2.GaussianBlur(result, (5, 5), 0)
             result = cv2.addWeighted(result, 1.0, glow, self.params['glow_strength'], 0)
 
         return result
 
     def render_particles_fast(self, surface):
-        """Render particles"""
-        for particle in self.particles:
-            if 0 <= particle.x < self.width and 0 <= particle.y < self.height:
-                life = particle.life
-                intensity = particle.intensity * life
+        """Render particles (optimized)"""
+        for p in self.particles:
+            if 0 <= p.x < self.width and 0 <= p.y < self.height:
+                life = p.life
+                intensity = p.intensity * life
 
                 if life > 0.5:
-                    color = (
-                        int(255 * intensity),
-                        int(180 * intensity),
-                        int(50 * intensity)
-                    )
+                    color = (int(255 * intensity), int(180 * intensity), int(50 * intensity))
                 else:
-                    color = (
-                        int(100 * intensity),
-                        int(200 * intensity),
-                        int(255 * intensity)
-                    )
+                    color = (int(100 * intensity), int(200 * intensity), int(255 * intensity))
 
-                size = int(particle.size * life)
-                if size > 0:
-                    pygame.draw.circle(
-                        surface,
-                        color,
-                        (int(particle.x), int(particle.y)),
-                        size
-                    )
+                size = max(1, int(p.size * life))
+                pygame.draw.circle(surface, color, (int(p.x), int(p.y)), size)
 
     def handle_input(self):
         """Handle input"""
@@ -505,10 +549,15 @@ class ScintigraphyTracker:
             if event.type == KEYDOWN:
                 if event.key == K_ESCAPE:
                     return False
+                if event.key == K_s:
+                    self.scanner_mode = not self.scanner_mode
+                    self.scanner_y = 0
+                    self.scanner_buffer = np.zeros_like(self.scanner_buffer)
+                    print(f"🔄 Scanner mode: {'ON' if self.scanner_mode else 'OFF'}")
         return True
 
     def cleanup(self):
-        """Cleanup resources"""
+        """Cleanup"""
         if self.pose:
             try:
                 self.pose.close()
@@ -523,11 +572,16 @@ class ScintigraphyTracker:
         """Main loop"""
         print("\n" + "="*60)
         print("🔬 SCINTIGRAPHY BLOB TRACKER")
+        if self.is_video_file:
+            print(f"   + Video Input: {self.video_source}")
+        else:
+            print("   + Webcam Input")
         if self.use_skeleton:
             print("   + MediaPipe Skeleton Tracking")
+        print("   + Scanner Mode (press S)")
         print("   + Separate Control Window")
         print("="*60)
-        print("\n⌨️  Press ESC to quit")
+        print("\n⌨️  S = Toggle Scanner | ESC = Quit")
         print("="*60 + "\n")
 
         running = True
@@ -550,12 +604,22 @@ class ScintigraphyTracker:
 
                 ret, frame = self.cap.read()
                 if not ret:
-                    print("❌ Failed to capture frame")
-                    break
+                    if self.is_video_file:
+                        # Loop video
+                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        continue
+                    else:
+                        break
 
-                frame = cv2.flip(frame, 1)
+                # Resize if needed
+                if frame.shape[1] != self.width or frame.shape[0] != self.height:
+                    frame = cv2.resize(frame, (self.width, self.height))
 
-                # Pose detection (if available)
+                # Mirror for webcam (not for video files)
+                if not self.is_video_file:
+                    frame = cv2.flip(frame, 1)
+
+                # Pose detection
                 pose_results = self.detect_pose(frame)
 
                 # Background removal
@@ -575,15 +639,19 @@ class ScintigraphyTracker:
                 # Effects
                 final_image = self.apply_effects_fast(colored_trail)
 
+                # Scanner mode
+                if self.scanner_mode:
+                    final_image = self.apply_scanner_effect(final_image)
+
                 # Skeleton overlay
                 if self.use_skeleton:
                     final_image = self.draw_skeleton(final_image, pose_results)
 
                 # Convert to Pygame
-                final_image_rgb = cv2.cvtColor(final_image, cv2.COLOR_BGR2RGB)
-                final_image_rgb = np.rot90(final_image_rgb)
-                final_image_rgb = np.flipud(final_image_rgb)
-                pygame_surface = pygame.surfarray.make_surface(final_image_rgb)
+                final_rgb = cv2.cvtColor(final_image, cv2.COLOR_BGR2RGB)
+                final_rgb = np.rot90(final_rgb)
+                final_rgb = np.flipud(final_rgb)
+                pygame_surface = pygame.surfarray.make_surface(final_rgb)
 
                 self.screen.blit(pygame_surface, (0, 0))
                 self.render_particles_fast(self.screen)
@@ -591,16 +659,20 @@ class ScintigraphyTracker:
 
                 # Control window
                 avg_fps = np.mean(self.fps_history) if self.fps_history else 0
-                self.control_window.show(avg_fps, self.skeleton_detected)
+                mode = "SCANNER" if self.scanner_mode else "NORMAL"
+                self.control_window.show(avg_fps, mode, self.skeleton_detected)
 
                 key = cv2.waitKey(1) & 0xFF
                 if key == 27:
                     running = False
+                elif key == ord('s'):
+                    self.scanner_mode = not self.scanner_mode
+                    self.scanner_y = 0
 
                 self.clock.tick(60)
 
         except KeyboardInterrupt:
-            print("\n⚠️  Interrupted by user")
+            pass
         except Exception as e:
             print(f"\n❌ Error: {e}")
         finally:
@@ -609,14 +681,21 @@ class ScintigraphyTracker:
 
 
 def main():
-    """Entry point"""
     print("\n" + "="*60)
     print("🔬 SCINTIGRAPHY BLOB TRACKER")
     print("   Medical Scifi Real-time Performance Tool")
     print("="*60 + "\n")
 
+    # Check for video file argument
+    video_source = None
+    if len(sys.argv) > 1:
+        video_source = sys.argv[1]
+        print(f"📁 Video input: {video_source}")
+    else:
+        print("📹 Using webcam (pass video path as argument to use video file)")
+
     try:
-        tracker = ScintigraphyTracker(width=1280, height=720)
+        tracker = ScintigraphyTracker(width=1280, height=720, video_source=video_source)
         tracker.run()
     except Exception as e:
         print(f"❌ Failed to start: {e}")
