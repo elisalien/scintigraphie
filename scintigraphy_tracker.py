@@ -256,6 +256,10 @@ class ScintigraphyTracker:
         # Static textures (optimized)
         self._create_static_textures()
 
+        # Pre-computed grain textures (cycle through them for variety)
+        self._create_grain_textures()
+        self.grain_index = 0
+
         # Mode and scanner state
         self.scanner_mode = False
         self.scanner_y = 0
@@ -319,6 +323,19 @@ class ScintigraphyTracker:
 
         # Pre-compute vignette as uint8 for faster blending
         self.vignette_3ch = np.dstack([self.vignette] * 3)
+
+    def _create_grain_textures(self):
+        """Pre-compute grain textures for fast cycling"""
+        self.grain_textures = []
+        h, w = self.height, self.width
+
+        # Create 8 different grain textures to cycle through
+        for _ in range(8):
+            # Simple noise at 1/4 resolution, then upscale (faster)
+            noise_small = np.random.randint(-25, 25, (h // 4, w // 4), dtype=np.int8)
+            noise = cv2.resize(noise_small.astype(np.float32), (w, h),
+                               interpolation=cv2.INTER_LINEAR).astype(np.int8)
+            self.grain_textures.append(noise)
 
     def detect_pose(self, frame):
         """Detect pose using MediaPipe"""
@@ -555,63 +572,43 @@ class ScintigraphyTracker:
         return result
 
     def _apply_grain(self, image, intensity):
-        """Apply film grain/noise effect - authentic medical imaging look"""
-        # Generate noise - mix of fine and coarse grain
-        h, w = image.shape[:2]
+        """Apply film grain/noise effect - optimized with pre-computed textures"""
+        # Use pre-computed grain texture (cycle through them)
+        grain = self.grain_textures[self.grain_index]
+        self.grain_index = (self.grain_index + 1) % len(self.grain_textures)
 
-        # Fine grain (pixel-level noise)
-        fine_noise = np.random.randint(-30, 30, (h, w), dtype=np.int16)
+        # Scale grain by intensity and apply directly (fast)
+        scaled_grain = (grain.astype(np.int16) * intensity * 1.5).astype(np.int8)
 
-        # Coarse grain (larger splotches, more like X-ray film)
-        coarse = np.random.randint(-20, 20, (h // 4, w // 4), dtype=np.int16)
-        coarse_noise = cv2.resize(coarse.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR).astype(np.int16)
-
-        # Combine noises
-        combined_noise = (fine_noise * 0.6 + coarse_noise * 0.4).astype(np.int16)
-
-        # Scale by intensity and image brightness (more noise in mid-tones)
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-        # Bell curve - more noise in mid-tones, less in pure black/white
-        noise_mask = (4.0 * gray * (1.0 - gray))  # Peaks at 0.5
-
-        # Apply noise
-        result = image.astype(np.int16)
-        for c in range(3):
-            channel_noise = (combined_noise * noise_mask * intensity * 1.5).astype(np.int16)
-            result[:, :, c] = np.clip(result[:, :, c] + channel_noise, 0, 255)
-
-        return result.astype(np.uint8)
+        # Add grain to all channels at once (vectorized)
+        result = cv2.add(image, cv2.merge([scaled_grain, scaled_grain, scaled_grain]),
+                         dtype=cv2.CV_8U)
+        return result
 
     def _apply_depth_effect(self, image, intensity):
-        """Apply pseudo-depth map effect - creates 3D-like depth from intensity"""
-        # Convert to grayscale to get intensity map
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        """Apply pseudo-depth map effect - optimized blur-based glow"""
+        # Simple blur-based depth effect (much faster than Sobel)
+        # Brighter areas get a cyan glow halo
 
-        # Create depth-based edge glow (brighter areas appear closer)
-        # Use Sobel for edge detection
-        sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-        edges = np.sqrt(sobelx**2 + sobely**2)
-        edges = (edges / edges.max() * 255).astype(np.uint8) if edges.max() > 0 else edges.astype(np.uint8)
+        # Create glow from blurred image
+        glow = cv2.GaussianBlur(image, (11, 11), 0)
 
-        # Create depth highlight (brighter = closer = more glow)
-        depth_highlight = cv2.GaussianBlur(gray, (15, 15), 0)
+        # Blend glow with cyan tint
+        # Scale intensity factor
+        alpha = intensity * 0.4
 
-        # Blend depth into blue channel for "depth fog" effect
-        result = image.copy().astype(np.float32)
+        # Add weighted glow (creates depth halo effect)
+        result = cv2.addWeighted(image, 1.0, glow, alpha, 0)
 
-        # Add edge glow in cyan
-        edge_glow = edges.astype(np.float32) / 255.0 * intensity * 0.5
-        result[:, :, 0] += edge_glow * 60  # Blue
-        result[:, :, 1] += edge_glow * 80  # Green (cyan tint)
+        # Boost cyan channel slightly in bright areas for depth tint
+        if intensity > 0.3:
+            b, g, r = cv2.split(result)
+            boost = int(intensity * 15)
+            b = cv2.add(b, boost)
+            g = cv2.add(g, int(boost * 0.7))
+            result = cv2.merge([b, g, r])
 
-        # Add depth-based intensity boost (brighter areas pop more)
-        depth_boost = (depth_highlight.astype(np.float32) / 255.0) ** 1.5 * intensity * 0.3
-        result[:, :, 0] += depth_boost * 40
-        result[:, :, 1] += depth_boost * 50
-        result[:, :, 2] += depth_boost * 30
-
-        return np.clip(result, 0, 255).astype(np.uint8)
+        return result
 
     def render_particles_fast(self, surface):
         """Render particles (optimized) - cyan color scheme"""
